@@ -39,7 +39,7 @@ import { updateStatusBar } from "../jobManager/statusBar";
 import { statementDone } from "./editorUi";
 import { EXPORT_FORMATS, ExportFormat, ExportTable, openResultsAs } from "./export";
 import * as html from "./html";
-import { RESULT_ROW_ACTIONS, buildDeleteStatement } from "./rowChanges";
+import { RESULT_ROW_ACTIONS, buildDeleteStatement, selectListIncludes } from "./rowChanges";
 
 export type SqlParameter = string | number;
 
@@ -544,14 +544,25 @@ export class ResultSetPanelProvider implements WebviewViewProvider {
               const keyColumns = !isSessionTable && Configuration.get<boolean>(`schemaBrowser.crudUseKeyColumns`) !== false
                 ? await Table.getKeyColumns(goodSchema, goodName)
                 : [];
-              const usableKey = keyColumns.length > 0 && keyColumns.every(name => tableInfo.some(column => column.COLUMN_NAME === name && !uneditableTypes.includes(column.DATA_TYPE)));
+
+              // A key the statement does not return cannot identify its rows: RRN is added instead
+              const lowerSelect = basicSelect.toLowerCase();
+              const listStart = lowerSelect.indexOf(`select `);
+              const listEnd = lowerSelect.indexOf(`from`);
+              const selectList = listStart >= 0 && listEnd > listStart ? basicSelect.substring(listStart + 7, listEnd) : undefined;
+              const isReturned = (name: string) => selectListIncludes(selectList, name);
+
+              // Nullable (unique key) columns are left out: `IS NULL` could match many rows
+              const usableKey = keyColumns.length > 0 && keyColumns.every(name => isReturned(name) && tableInfo.some(column =>
+                column.COLUMN_NAME === name && !uneditableTypes.includes(column.DATA_TYPE) && column.IS_NULLABLE !== `Y`
+              ));
 
               currentColumns = tableInfo
                 .filter((column) => !uneditableTypes.includes(column.DATA_TYPE))
                 .map((column) => ({
                   name: column.COLUMN_NAME,
                   jsType: column.NUMERIC_PRECISION ? `number` : `asString`,
-                  useInWhere: usableKey ? keyColumns.includes(column.COLUMN_NAME) : column.IS_IDENTITY === `YES`,
+                  useInWhere: usableKey ? keyColumns.includes(column.COLUMN_NAME) : column.IS_IDENTITY === `YES` && isReturned(column.COLUMN_NAME),
                   isNullable: column.IS_NULLABLE === `Y`,
                   maxInputLength: column.CHARACTER_MAXIMUM_LENGTH,
                   insertable: !isGeneratedColumn(column),

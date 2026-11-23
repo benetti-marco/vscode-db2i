@@ -1483,6 +1483,13 @@ export function renderDataTable<T>(options: DataTableOptions<T>, tableId = ``): 
           return;
         }
 
+        // A null key does not identify one row: IS NULL could match many
+        const nullKeys = updateKeyColumns.filter((c) => idValues[c.name] === null).map((c) => c.name);
+        if (nullKeys.length) {
+          showSqlPreview("This row cannot be changed: " + nullKeys.join(", ") + " is null.", "These columns identify the row.", true);
+          return;
+        }
+
         const originalValue = hoverable.innerText;
         const editableNode = hoverable;
         const wasNull = editableNode.classList.contains("dt-null");
@@ -1490,7 +1497,9 @@ export function renderDataTable<T>(options: DataTableOptions<T>, tableId = ``): 
         const getSqlStatement = (newValue, withSane, nullify) => {
           const useRrn = updateKeyColumns.length === 1 && updateKeyColumns.some((c) => c.name === "RRN");
           let bindings = [];
-          let updateStatement = "UPDATE " + updateTable.table + " t SET t." + chosenColumn + " = ";
+          // Preview text of each binding: numbers are bound as text but shown unquoted
+          let literals = [];
+          let updateStatement = "UPDATE " + updateTable.table + " t SET t." + sqlName(chosenColumn) + " = ";
 
           if (nullify) {
             updateStatement += "NULL";
@@ -1499,6 +1508,7 @@ export function renderDataTable<T>(options: DataTableOptions<T>, tableId = ``): 
               case "number":
                 if (isNumeric(newValue)) {
                   bindings.push(newValue);
+                  literals.push(newValue);
                   updateStatement += "?";
                 } else {
                   return undefined;
@@ -1507,24 +1517,22 @@ export function renderDataTable<T>(options: DataTableOptions<T>, tableId = ``): 
               case "asString":
                 updateStatement += "?";
                 bindings.push(newValue);
+                literals.push("'" + newValue.replace(/'/g, "''") + "'");
                 break;
             }
           }
 
           const conditions = [];
-          updateKeyColumns.forEach((keyColumn) => {
+          for (const keyColumn of updateKeyColumns) {
             const value = idValues[keyColumn.name];
-            const target = useRrn && keyColumn.name === "RRN" ? "RRN(t)" : keyColumn.name;
-            if (value === null) {
-              conditions.push(target + " IS NULL");
-              return;
-            }
+            // Null keys were refused when editing started
+            if (value === null) return undefined;
+            const target = useRrn && keyColumn.name === "RRN" ? "RRN(t)" : sqlName(keyColumn.name);
             conditions.push(target + " = ?");
-            switch (keyColumn.jsType) {
-              case "number": bindings.push(Number(value)); break;
-              case "asString": bindings.push(value); break;
-            }
-          });
+            // Keys are bound as the text shown: Number() would round large BIGINT and DECIMAL values
+            bindings.push(value);
+            literals.push(keyColumn.jsType === "number" ? value : "'" + value.replace(/'/g, "''") + "'");
+          }
           // Never send an UPDATE that would hit every row
           if (conditions.length === 0) return undefined;
           updateStatement += " WHERE " + conditions.join(" AND ");
@@ -1534,9 +1542,7 @@ export function renderDataTable<T>(options: DataTableOptions<T>, tableId = ``): 
           if (withSane) {
             for (let i = 0; i < statementParts.length; i++) {
               saneStatement += statementParts[i];
-              if (bindings[i] !== undefined) {
-                saneStatement += typeof bindings[i] === "string" ? "'" + bindings[i] + "'" : bindings[i];
-              }
+              if (literals[i] !== undefined) saneStatement += literals[i];
             }
           }
 
